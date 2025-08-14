@@ -19,21 +19,49 @@ import fitz  # PyMuPDF
 import re
 import json
 from datetime import datetime
+from dotenv import load_dotenv
 
-# Import RAG engine
+# Load environment variables
+load_dotenv()
+
+# Import RAG engine and AI clients
 from services.simple_rag import SimpleTfIdfRAG
+from services.gemini_client import GeminiClient
 
 app = FastAPI(title="StudyMate API", version="1.0.0")
 
-# Initialize RAG Engine
-print("🤖 Initializing TF-IDF RAG Engine...")
+# Initialize AI clients
+print("🤖 Initializing AI Services...")
+
+# Initialize RAG Engine (Local Model)
+print("📚 Setting up TF-IDF RAG Engine...")
 rag_engine = SimpleTfIdfRAG(
     chunk_size=512,  # Optimal chunk size for most documents
     chunk_overlap=50  # Overlap to maintain context
 )
 
+# Initialize Gemini AI Client (Cloud Model)
+print("🧠 Setting up Gemini AI Client...")
+gemini_client = GeminiClient()
+
 # Try to load existing index
 rag_engine.load_index()
+
+# Load existing files from uploads directory
+def load_existing_files():
+    """Load existing PDF files from uploads directory and register them"""
+    uploads_dir = Path("data/uploads")
+    if uploads_dir.exists():
+        for pdf_file in uploads_dir.glob("*.pdf"):
+            # Check if file is already registered
+            if not any(f["filename"] == pdf_file.name for f in uploaded_files):
+                doc_id = str(len(uploaded_files) + 1)
+                uploaded_files.append({
+                    "id": doc_id,
+                    "filename": pdf_file.name,
+                    "status": "processed"
+                })
+                print(f"📄 Registered existing file: {pdf_file.name}")
 
 # CORS middleware for React frontend
 app.add_middleware(
@@ -44,18 +72,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add request logging middleware
+@app.middleware("http")
+async def log_requests(request, call_next):
+    print(f"📡 {request.method} {request.url}")
+    response = await call_next(request)
+    print(f"📤 Response: {response.status_code}")
+    return response
+
 # Request/Response models
 class QuestionRequest(BaseModel):
     question: str
     document_ids: List[str] = []
     language: Optional[str] = "en"  # Language preference
     response_style: Optional[str] = "comprehensive"  # comprehensive, concise, detailed
+    ai_model: Optional[str] = "auto"  # auto, local, gemini
 
 class QuestionResponse(BaseModel):
     answer: str
     citations: List[str]
     sources: List[Dict[str, Any]]
     confidence_score: float
+    ai_model_used: str
     language_detected: str
     processing_time: float
 
@@ -84,6 +122,10 @@ demo_users = {
 
 uploaded_files = []
 document_contents = {}  # Store extracted text content
+
+# Load existing files on startup
+load_existing_files()
+
 language_translations = {
     "en": {
         "greeting": "Hello! I'm your AI assistant.",
@@ -322,57 +364,75 @@ async def register(request: RegisterRequest):
 @app.post("/api/documents/upload")
 async def upload_document(file: UploadFile = File(...)):
     """Upload and process PDF document with RAG indexing"""
+    print(f"📁 Upload attempt - filename: {file.filename}, content_type: {file.content_type}")
+    
     if not file.filename or not file.filename.endswith('.pdf'):
+        print(f"❌ Invalid file type: {file.filename}")
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
     
-    # Save file
-    file_path = Path("data/uploads") / file.filename
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    with open(file_path, "wb") as f:
-        content = await file.read()
-        f.write(content)
-    
-    # Extract text content from PDF
-    extracted_text = extract_text_from_pdf(str(file_path))
-    
-    if not extracted_text.strip():
-        raise HTTPException(status_code=400, detail="Could not extract text from PDF")
-    
-    # Store document info
-    doc_id = str(len(uploaded_files) + 1)
-    uploaded_files.append({
-        "id": doc_id,
-        "filename": file.filename,
-        "status": "processed"
-    })
-    
-    # Add document to RAG engine for semantic indexing
     try:
-        chunks_created = rag_engine.add_document(
-            content=extracted_text,
-            doc_id=doc_id,
-            filename=file.filename,
-            metadata={"upload_time": datetime.now().isoformat()}
-        )
+        # Save file
+        file_path = Path("data/uploads") / file.filename
+        file_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Save the updated index
-        rag_engine.save_index()
+        print(f"💾 Saving file to: {file_path}")
         
-        print(f"✅ Document {file.filename} indexed with {chunks_created} chunks")
+        with open(file_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+            print(f"📊 File size: {len(content)} bytes")
         
+        # Extract text content from PDF
+        print(f"📄 Extracting text from PDF...")
+        extracted_text = extract_text_from_pdf(str(file_path))
+        
+        if not extracted_text.strip():
+            print("❌ No text extracted from PDF")
+            raise HTTPException(status_code=400, detail="Could not extract text from PDF")
+            
+        print(f"✅ Extracted {len(extracted_text)} characters of text")
+        
+        # Store document info
+        doc_id = str(len(uploaded_files) + 1)
+        uploaded_files.append({
+            "id": doc_id,
+            "filename": file.filename,
+            "status": "processed"
+        })
+        
+        # Add document to RAG engine for semantic indexing
+        try:
+            chunks_created = rag_engine.add_document(
+                content=extracted_text,
+                doc_id=doc_id,
+                filename=file.filename,
+                metadata={"upload_time": datetime.now().isoformat()}
+            )
+            
+            # Save the updated index
+            rag_engine.save_index()
+            
+            print(f"✅ Document {file.filename} indexed with {chunks_created} chunks")
+            
+        except Exception as e:
+            print(f"❌ Error indexing document: {e}")
+            raise HTTPException(status_code=500, detail=f"Error indexing document: {str(e)}")
+        
+        # Store extracted content for fallback
+        document_contents[doc_id] = extracted_text
+        
+        return {
+            "message": f"{file.filename} uploaded and indexed successfully",
+            "chunks_created": chunks_created,
+            "doc_id": doc_id
+        }
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
     except Exception as e:
-        print(f"❌ Error indexing document: {e}")
-        raise HTTPException(status_code=500, detail=f"Error indexing document: {str(e)}")
-    
-    # Store extracted content for fallback
-    document_contents[doc_id] = extracted_text
-    
-    return {
-        "message": f"{file.filename} uploaded and indexed successfully",
-        "chunks_created": chunks_created,
-        "doc_id": doc_id
-    }
+        print(f"❌ Error processing upload: {e}")
+        raise HTTPException(status_code=400, detail=f"Error processing file: {str(e)}")
 
 @app.get("/api/documents")
 async def get_documents():
@@ -427,19 +487,53 @@ async def get_rag_stats():
 
 @app.post("/api/qa/ask", response_model=QuestionResponse)
 async def ask_question(request: QuestionRequest):
-    """Ask a question about uploaded documents using RAG (Retrieval-Augmented Generation)"""
+    """Ask a question about uploaded documents using RAG with AI model selection"""
     if not uploaded_files:
         raise HTTPException(status_code=400, detail="No documents uploaded yet")
     
     start_time = datetime.now()
+    ai_model_used = "local"  # Default
+    answer = ""
+    confidence = 0.0
     
     try:
-        # Use RAG engine for intelligent document retrieval and answer generation
-        answer, citations, confidence, sources = rag_engine.generate_answer(
-            query=request.question,
-            language=request.language or "en",
-            response_style=request.response_style or "comprehensive"
-        )
+        # Determine which AI model to use
+        use_gemini = False
+        if request.ai_model == "gemini":
+            use_gemini = gemini_client.is_available()
+            if not use_gemini:
+                print("⚠️ Gemini requested but not available, falling back to local model")
+        elif request.ai_model == "auto":
+            use_gemini = gemini_client.is_available()
+        
+        # Get relevant context using RAG retrieval
+        search_results = rag_engine.retrieve_relevant_chunks(request.question, top_k=5)
+        context = "\n\n".join([result[0]["content"] for result in search_results])
+        
+        if use_gemini and context:
+            # Use Gemini AI for enhanced responses
+            try:
+                gemini_response = await gemini_client.generate_answer(
+                    question=request.question,
+                    context=context
+                )
+                answer = gemini_response["answer"]
+                confidence = gemini_response["confidence"]
+                ai_model_used = "gemini"
+                print(f"✅ Used Gemini AI for enhanced response")
+            except Exception as e:
+                print(f"⚠️ Gemini failed, falling back to local model: {e}")
+                use_gemini = False
+        
+        if not use_gemini:
+            # Use local RAG engine
+            answer, citations, confidence, sources = rag_engine.generate_answer(
+                query=request.question,
+                language=request.language or "en",
+                response_style=request.response_style or "comprehensive"
+            )
+            ai_model_used = "local"
+            print(f"✅ Used local TF-IDF model")
         
         # Detect language of the question
         detected_language = detect_language(request.question)
@@ -449,37 +543,47 @@ async def ask_question(request: QuestionRequest):
         
         # Format sources for frontend
         formatted_sources = []
-        for source in sources:
+        for result, similarity in search_results[:3]:  # Top 3 sources
             formatted_sources.append({
-                "document": source["filename"],
-                "chunk": source["chunk_id"],
-                "relevance": f"{source['similarity']:.2f}",
-                "preview": source["content_preview"]
+                "document": result.get("filename", "Unknown"),
+                "chunk": int(result.get("chunk_id", 0)) if result.get("chunk_id") is not None else 0,
+                "relevance": f"{float(similarity):.2f}",
+                "preview": result.get("content", "")[:200] + "..."
             })
         
-        # Enhance answer with RAG statistics
+        # Create citations
+        citations = [f"Document: {result[0].get('filename', 'Unknown')}" for result in search_results[:3]]
+        
+        # Enhance answer with analytics
         rag_stats = rag_engine.get_document_stats()
+        model_info = f"🤖 **AI Model:** {ai_model_used.title()}"
+        if ai_model_used == "gemini":
+            model_info += " (Google Gemini 1.5 Flash)"
+        else:
+            model_info += " (TF-IDF + Text Processing)"
+        
         enhanced_answer = f"""{answer}
 
 ---
-**RAG Analytics:**
-• Retrieved from {len(sources)} most relevant document sections
+**Analysis Details:**
+{model_info}
+• Retrieved from {len(search_results)} most relevant document sections
 • Processed {rag_stats['total_chunks']} indexed chunks across {rag_stats['total_documents']} documents
-• Semantic similarity matching using {rag_stats['model_name']} embeddings
 • Processing time: {processing_time:.2f}s"""
 
         return QuestionResponse(
             answer=enhanced_answer,
             citations=citations,
             sources=formatted_sources,
-            confidence_score=confidence,
+            confidence_score=float(confidence),
             language_detected=detected_language,
-            processing_time=processing_time
+            processing_time=float(processing_time),
+            ai_model_used=ai_model_used
         )
         
     except Exception as e:
-        print(f"❌ Error in RAG question processing: {e}")
-        # Fallback to simple text search if RAG fails
+        print(f"❌ Error in question processing: {e}")
+        # Fallback to simple text search if everything fails
         return await ask_question_fallback(request, start_time)
 
 async def ask_question_fallback(request: QuestionRequest, start_time: datetime):
@@ -515,13 +619,50 @@ async def ask_question_fallback(request: QuestionRequest, start_time: datetime):
         sources=[{"document": f["filename"], "relevance": "text-match"} for f in uploaded_files],
         confidence_score=confidence * 0.8,  # Reduce confidence for fallback
         language_detected=detected_language,
-        processing_time=processing_time
+        processing_time=processing_time,
+        ai_model_used="fallback"
     )
 
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "message": "StudyMate API is running"}
+
+@app.get("/api/test")
+async def test_endpoint():
+    """Test endpoint to verify server is working"""
+    return {"status": "working", "message": "Server is responding correctly"}
+
+@app.post("/api/test-upload")
+async def test_upload():
+    """Test upload endpoint without file"""
+    return {"status": "upload_endpoint_working", "message": "Upload endpoint is reachable"}
+
+@app.get("/api/debug/search")
+async def debug_search(query: str = "test"):
+    """Debug endpoint to test search functionality"""
+    try:
+        # Get RAG stats
+        stats = rag_engine.get_document_stats()
+        
+        # Test search
+        search_results = rag_engine.retrieve_relevant_chunks(query, top_k=5, similarity_threshold=0.0)
+        
+        return {
+            "query": query,
+            "rag_stats": stats,
+            "search_results_count": len(search_results),
+            "search_results": [
+                {
+                    "similarity": float(result[1]),
+                    "content_preview": result[0]["content"][:100] + "..." if len(result[0]["content"]) > 100 else result[0]["content"],
+                    "filename": result[0].get("filename", "Unknown")
+                }
+                for result in search_results[:3]
+            ]
+        }
+    except Exception as e:
+        return {"error": str(e), "query": query}
 
 # Serve React app
 @app.get("/")

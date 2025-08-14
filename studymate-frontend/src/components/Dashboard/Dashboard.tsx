@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   Box,
   Typography,
 } from '@mui/material';
 import Layout from '../Layout/Layout';
 import UploadTab from './UploadTab';
-import QATab from './QATab';
+import QATabProfessional from './QATabProfessional';
 import SummaryTab from './SummaryTab';
 import FlashcardsTab from './FlashcardsTab';
 import QuizTab from './QuizTab';
@@ -14,7 +14,6 @@ import NotesTab from './NotesTab';
 const Dashboard: React.FC = () => {
   const [activeTab, setActiveTab] = useState(0);
   const [uploadedFiles, setUploadedFiles] = useState<string[]>([]);
-  const [conversationHistory, setConversationHistory] = useState<any[]>([]);
 
   const renderTabContent = () => {
     switch (activeTab) {
@@ -27,11 +26,7 @@ const Dashboard: React.FC = () => {
         );
       case 1:
         return (
-          <QATab 
-            uploadedFiles={uploadedFiles}
-            conversationHistory={conversationHistory}
-            setConversationHistory={setConversationHistory}
-          />
+          <QATabProfessional />
         );
       case 2:
         return <SummaryTab uploadedFiles={uploadedFiles} />;

@@ -1,0 +1,34 @@
+# StudyMate Professional Environment Configuration
+# Copy this file to .env and fill in your actual credentials
+
+# AI Model Options - Choose one or more
+# Google Gemini API (Recommended for best quality)
+GEMINI_API_KEY=your_gemini_api_key_here
+
+# IBM Watson Configuration
+# Get these from your IBM Cloud Watson Machine Learning service
+IBM_WATSON_API_KEY=your_watson_api_key_here
+IBM_WATSON_URL=https://us-south.ml.cloud.ibm.com
+IBM_WATSON_PROJECT_ID=your_project_id_here
+
+# Optional: OpenAI fallback (if you have an OpenAI API key)
+OPENAI_API_KEY=your_openai_api_key_here
+
+# Application Settings
+LOG_LEVEL=INFO
+UPLOAD_MAX_SIZE=50MB
+CHUNK_SIZE=512
+CHUNK_OVERLAP=100
+
+# Model Settings
+EMBEDDING_MODEL=all-MiniLM-L6-v2
+LLM_MODEL=ibm/mixtral-8x7b-instruct
+TOP_K_RESULTS=5
+
+# Instructions for getting IBM Watson credentials:
+# 1. Go to https://cloud.ibm.com/catalog/services/watson-machine-learning
+# 2. Create a Watson Machine Learning service instance
+# 3. Go to the service credentials and create new credentials
+# 4. Copy the API key and URL
+# 5. Create a project in Watson Studio and copy the project ID
+# 6. Fill in the values above and rename this file to .env

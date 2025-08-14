@@ -33,7 +33,9 @@ class SimpleTfIdfRAG:
             max_features=5000,
             stop_words='english',
             ngram_range=(1, 2),
-            lowercase=True
+            lowercase=True,
+            min_df=1,  # Include words that appear in at least 1 document
+            max_df=0.95  # Include words that appear in up to 95% of documents
         )
         self.tfidf_matrix = None
         
@@ -149,9 +151,10 @@ class SimpleTfIdfRAG:
         if self.chunks:
             self.tfidf_matrix = self.vectorizer.fit_transform(self.chunks)
     
-    def retrieve_relevant_chunks(self, query: str, top_k: int = 5, similarity_threshold: float = 0.1) -> List[Tuple[Dict, float]]:
+    def retrieve_relevant_chunks(self, query: str, top_k: int = 5, similarity_threshold: float = 0.0001) -> List[Tuple[Dict, float]]:
         """Retrieve most relevant chunks using TF-IDF similarity"""
         if not self.chunks or self.tfidf_matrix is None:
+            print(f"⚠️ No chunks available for search. Chunks: {len(self.chunks)}")
             return []
         
         # Transform query using same vectorizer
@@ -160,30 +163,73 @@ class SimpleTfIdfRAG:
         # Calculate cosine similarities
         similarities = cosine_similarity(query_vector, self.tfidf_matrix).flatten()
         
+        # Debug: Print similarity scores
+        print(f"🔍 Query: '{query}'")
+        print(f"📊 Max similarity: {max(similarities) if len(similarities) > 0 else 'N/A'}")
+        print(f"📊 Non-zero similarities: {len(similarities[similarities > 0])}")
+        
         # Get top k results above threshold
         top_indices = similarities.argsort()[-top_k:][::-1]
         
         results = []
         for idx in top_indices:
-            if similarities[idx] >= similarity_threshold:
+            similarity_score = similarities[idx]
+            print(f"🎯 Chunk {idx}: similarity={similarity_score:.6f}, threshold={similarity_threshold}")
+            
+            if similarity_score >= similarity_threshold:
                 chunk_info = {
                     "content": self.chunks[idx],
                     "metadata": self.chunk_metadata[idx],
-                    "similarity": similarities[idx]
+                    "similarity": similarity_score,
+                    "chunk_id": idx,
+                    "filename": self.chunk_metadata[idx].get("filename", "Unknown")
                 }
-                results.append((chunk_info, similarities[idx]))
+                results.append((chunk_info, similarity_score))
+                print(f"✅ Added chunk {idx} to results")
+            else:
+                print(f"❌ Chunk {idx} below threshold")
         
+        print(f"📋 Returning {len(results)} relevant chunks")
         return results
     
     def generate_answer(self, query: str, language: str = "en", response_style: str = "comprehensive") -> Tuple[str, List[str], float, List[Dict]]:
         """Generate answer using TF-IDF RAG"""
         start_time = datetime.now()
         
-        # Retrieve relevant chunks
-        relevant_chunks = self.retrieve_relevant_chunks(query, top_k=5)
+        # Retrieve relevant chunks with a very low threshold to ensure we get some results
+        relevant_chunks = self.retrieve_relevant_chunks(query, top_k=5, similarity_threshold=0.0001)
+        
+        # If still no results, try with an even lower threshold
+        if not relevant_chunks:
+            print("⚠️ No chunks found with 0.0001 threshold, trying 0.0...")
+            relevant_chunks = self.retrieve_relevant_chunks(query, top_k=5, similarity_threshold=0.0)
+        
+        # If still no results, try to get the best matches regardless of threshold
+        if not relevant_chunks:
+            print("⚠️ Still no chunks found, getting best available matches...")
+            relevant_chunks = self.retrieve_relevant_chunks(query, top_k=3, similarity_threshold=0.0)
         
         if not relevant_chunks:
-            return "I couldn't find relevant information in the uploaded documents to answer your question.", [], 0.0, []
+            # Create a basic response with document info
+            fallback_sources = []
+            for i, doc_id in enumerate(self.documents.keys()):
+                fallback_sources.append({
+                    "filename": self.documents[doc_id].get("filename", f"Document {doc_id}"),
+                    "chunk_id": 0,
+                    "similarity": 0.0,
+                    "content_preview": "Document available but no relevant sections found."
+                })
+            
+            return (
+                "I couldn't find specific relevant information in the uploaded documents to answer your question. This might be because:\n\n"
+                "• Your question terms don't closely match the document content\n"
+                "• The document might need re-uploading or re-indexing\n"
+                "• Try using different keywords or rephrasing your question\n\n"
+                "💡 Tip: Try asking about general topics mentioned in your documents or use broader search terms.",
+                [f"Document {i+1}" for i in range(len(self.documents))],
+                0.1,
+                fallback_sources
+            )
         
         # Extract information
         contexts = []
